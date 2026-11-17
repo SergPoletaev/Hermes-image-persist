@@ -237,7 +237,8 @@ def _processes_proc(marker: str) -> tuple:
 def _processes_ps(marker: str) -> tuple:
     import subprocess
 
-    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=15)
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True,
+                        timeout=15, encoding="utf-8", errors="replace")
     hits = []
     for line in out.stdout.splitlines():
         line = line.strip()
@@ -258,6 +259,7 @@ def _processes_windows(marker: str) -> tuple:
     out = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", query],
         capture_output=True, text=True, timeout=40,
+        encoding="utf-8", errors="replace",
     )
     payload = (out.stdout or "").strip()
     if not payload:

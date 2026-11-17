@@ -49,7 +49,7 @@ def register_windows(repo_dir: Path) -> tuple:
                 "schtasks.exe", "/Create", "/F", "/TN", TASK_NAME + ("" if trigger.startswith("/SC HOURLY") else "AtLogon"),
                 "/TR", '"%s" "%s" --quiet' % (exe, script),
             ] + trigger.split() + ["/RL", "LIMITED"]
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             if out.returncode != 0:
                 return False, "schtasks failed: %s" % (out.stderr or out.stdout).strip()[:200]
         return True, "tasks %s, %sAtLogon registered" % (TASK_NAME, TASK_NAME)
@@ -63,7 +63,7 @@ def unregister_windows() -> tuple:
         details = []
         for name in (TASK_NAME, TASK_NAME + "AtLogon"):
             out = subprocess.run(["schtasks.exe", "/Delete", "/F", "/TN", name],
-                                 capture_output=True, text=True, timeout=30)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             details.append("%s:%d" % (name, out.returncode))
             if out.returncode != 0 and "cannot find" not in (out.stderr or "").lower():
                 ok = False
@@ -114,7 +114,7 @@ def register_macos(repo_dir: Path) -> tuple:
             ["launchctl", "unload", str(plist)],
             ["launchctl", "load", str(plist)],
         ):
-            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return True, "LaunchAgent %s loaded (hourly + at login)" % LABEL
     except Exception as exc:
         return False, "registration failed: %r" % (exc,)
@@ -165,10 +165,10 @@ WantedBy=timers.target
         unit_dir.mkdir(parents=True, exist_ok=True)
         (unit_dir / (UNIT + ".service")).write_text(service, encoding="utf-8")
         (unit_dir / (UNIT + ".timer")).write_text(timer, encoding="utf-8")
-        out = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         if out.returncode == 0:
             subprocess.run(["systemctl", "--user", "enable", "--now", UNIT + ".timer"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             return True, "systemd user timer %s enabled" % UNIT
         return _register_cron(script, exe)
     except Exception:
@@ -177,13 +177,13 @@ WantedBy=timers.target
 
 def _register_cron(script: str, exe: str) -> tuple:
     try:
-        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=15)
+        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         existing = current.stdout if current.returncode == 0 else ""
         line = "@hourly %s %s --quiet" % (exe, script)
         if line in existing:
             return True, "cron entry already present"
         new = (existing.rstrip("\n") + "\n" + line + "\n").lstrip("\n")
-        proc = subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         if proc.returncode == 0:
             return True, "user crontab @hourly entry installed (systemd unavailable)"
         return False, "crontab install failed: %s" % (proc.stderr or "").strip()[:200]
@@ -206,11 +206,11 @@ def unregister_linux() -> tuple:
     except Exception:
         pass
     try:
-        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=15)
+        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         if current.returncode == 0:
             lines = [ln for ln in current.stdout.splitlines() if "guard.py" not in ln]
             subprocess.run(["crontab", "-"], input="\n".join(lines) + ("\n" if lines else ""),
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             details.append("cron cleaned")
     except Exception:
         pass
@@ -242,14 +242,14 @@ def registered() -> str:
     try:
         if os.name == "nt":
             out = subprocess.run(["schtasks.exe", "/Query", "/TN", TASK_NAME],
-                                 capture_output=True, text=True, timeout=20)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
             return "scheduled task present" if out.returncode == 0 else "not registered"
         if sys.platform == "darwin":
             return "launch agent present" if _launch_agent_path().is_file() else "not registered"
         timer = _systemd_dir() / (UNIT + ".timer")
         if timer.is_file():
             return "systemd timer present"
-        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=15)
+        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         if current.returncode == 0 and "guard.py" in current.stdout:
             return "cron entry present"
         return "not registered"

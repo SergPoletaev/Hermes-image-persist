@@ -477,11 +477,13 @@ def run_shim_tests(tmpdir: Path):
     env = dict(os.environ)
     env["HIP_TEST_IMAGE"] = str(img)
     env["HIP_TEST_NOTE"] = note
+    env["PYTHONUTF8"] = "1"  # force UTF-8 in the subprocess on Windows
 
     code = SHIM_TEST_CODE
     proc = subprocess.run(
         [sys.executable, "-I", "-c", code, str(agent_root), str(sp).replace("\\", "/")],
         capture_output=True, text=True, env=env, cwd=str(tmpdir), timeout=60,
+        encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         check("shim: subprocess ran", False, proc.stderr[-600:])
@@ -510,6 +512,7 @@ def run_shim_tests(tmpdir: Path):
          "print(getattr(p.GatewayTurnPrepareMixin._hmwa_apply_message_timestamp, '_hip_patched', False))"
          % (str(agent_root), str(sp).replace("\\", "/"))],
         capture_output=True, text=True, env=env_off, cwd=str(tmpdir), timeout=60,
+        encoding="utf-8", errors="replace",
     )
     check("shim: HERMES_IMAGE_PERSIST=off leaves seams untouched",
           proc_off.returncode == 0 and proc_off.stdout.strip() == "False", proc_off.stderr[-300:])
@@ -631,6 +634,7 @@ def run_real_module_test(tmpdir: Path):
         [sys.executable, "-I", "-c", REAL_MODULE_TEST_CODE,
          str(agent_root), str(sp).replace("\\", "/"), str(img)],
         capture_output=True, text=True, timeout=60,
+        encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         check("real: subprocess ran", False, proc.stderr[-700:])
