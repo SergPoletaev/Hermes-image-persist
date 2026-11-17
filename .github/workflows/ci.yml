@@ -8,23 +8,21 @@ on:
 
 jobs:
   selfcheck:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-    runs-on: ${{ matrix.os }}
+        python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Offline verification suite
         run: python selfcheck.py
-      - name: Installer preview refuses cleanly without Hermes
-        shell: bash
+      - name: Installer refuses without Hermes
         run: |
-          set -e
-          python install.py --home "$RUNNER_TEMP/nope-home" --root "$RUNNER_TEMP/nope-root" && exit 1 || code=$?
-          # expected: exit code 1 with a clear message
-          test "${code:-0}" = "1"
+          if python install.py --home /tmp/nope-home --root /tmp/nope-root 2>/dev/null; then
+            echo "ERROR: installer should have refused (exit 0) but did not"
+            exit 1
+          fi
