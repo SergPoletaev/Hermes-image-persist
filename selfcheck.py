@@ -738,6 +738,49 @@ def json_dumps(data):
 
 
 # ---------------------------------------------------------------------------
+# 5) discovery tests - standalone Python under <home>/tools/
+# ---------------------------------------------------------------------------
+
+def run_discovery_tests(tmpdir: Path):
+    print()
+    print("--- discovery (standalone Python under tools/) ---")
+
+    # Use a separate subdirectory so we don't collide with run_guard_tests.
+    home = tmpdir / "disc_home"
+    root = home / "hermes-agent"
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Hermes ships a standalone interpreter under tools/ (no pyvenv.cfg).
+    tools_py = home / "tools" / "python-3.14.9+20261021-win32-x64"
+    tools_py.mkdir(parents=True)
+    if os.name == "nt":
+        (tools_py / "python.exe").write_bytes(b"")
+    else:
+        (tools_py / "bin").mkdir()
+        (tools_py / "bin" / "python3").write_bytes(b"")
+
+    venvs = discovery.discover_venvs(home, root)
+    kinds = {k for _, k in venvs}
+    check("discovery: standalone Python under tools/ found",
+          any(k == "standalone" for _, k in venvs), venvs)
+
+    # site_packages() must return a usable path for the standalone root.
+    sp = discovery.site_packages(tools_py)
+    check("discovery: site_packages() resolves for standalone Python",
+          "site-packages" in str(sp).lower(), sp)
+
+    # facts.json pointing to a standalone Python must be accepted as committed.
+    facts_dir = home / "installs" / discovery.install_key(root)
+    facts_dir.mkdir(parents=True, exist_ok=True)
+    (facts_dir / "facts.json").write_text(
+        json_dumps({"packages": {"venv": {"environment": str(tools_py)}}}), encoding="utf-8")
+    committed = discovery.committed_environment(home, root)
+    check("discovery: committed_environment accepts standalone Python",
+          committed is not None and Path(committed).resolve() == tools_py.resolve(),
+          committed)
+
+
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     print("Hermes Image Persist 1.0.0 selfcheck")
@@ -749,6 +792,7 @@ def main() -> int:
         run_shim_tests(tmpdir)
         run_real_module_test(tmpdir)
         run_guard_tests(tmpdir)
+        run_discovery_tests(tmpdir)
     print()
     print("passed=%d failed=%d" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1

@@ -129,7 +129,7 @@ def venv_python(venv: Path) -> Path:
 
 
 def committed_environment(home: Path, root: Path) -> Path | None:
-    """The venv PM committed for this install (facts.json), if any."""
+    """The venv/Python PM committed for this install (facts.json), if any."""
     facts = install_state_dir(home, root) / "facts.json"
     try:
         data = json.loads(facts.read_text(encoding="utf-8-sig"))
@@ -139,16 +139,32 @@ def committed_environment(home: Path, root: Path) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
     env = Path(value)
-    if not (env / "pyvenv.cfg").is_file():
+    # Accept venvs (pyvenv.cfg) OR standalone Python roots (python.exe).
+    if not (env / "pyvenv.cfg").is_file() and not _has_python_exe(env):
         return None
     return env
 
 
-def discover_venvs(home: Path, root: Path, include_running: bool = True) -> list:
-    """All venvs the gateway could run on, most-authoritative first.
+def _has_python_exe(path: Path) -> bool:
+    """True if the directory looks like a Python root (venv or standalone)."""
+    path = Path(path)
+    if os.name == "nt":
+        return (path / "python.exe").is_file()
+    return (path / "bin" / "python3").is_file() or (path / "bin" / "python").is_file()
 
-    Returns a list of ``(venv_path, kind)`` tuples; ``kind`` is one of
-    ``committed``, ``generation``, ``intree``, ``outtree``, ``running``.
+
+def discover_venvs(home: Path, root: Path, include_running: bool = True) -> list:
+    """All Python environments the gateway could run on, most-authoritative first.
+
+    Returns a list of ``(env_path, kind)`` tuples; ``kind`` is one of
+    ``committed``, ``generation``, ``intree``, ``outtree``, ``standalone``,
+    ``running``.
+
+    Both real venvs (directories with ``pyvenv.cfg``) and standalone Python
+    installations (directories with ``python.exe`` / ``bin/python3`` but no
+    ``pyvenv.cfg``) are accepted. Hermes ships a standalone interpreter under
+    ``<home>/tools/`` (e.g. ``python-3.14.x-win32-x64``) — without this, the
+    shim would never be planted into the interpreter Hermes actually uses.
     """
     found = []
     seen = set()
@@ -158,7 +174,10 @@ def discover_venvs(home: Path, root: Path, include_running: bool = True) -> list
             path = Path(path).resolve()
         except Exception:
             return
-        if path in seen or not (path / "pyvenv.cfg").is_file():
+        if path in seen:
+            return
+        # Accept venvs (pyvenv.cfg) OR standalone Python roots (python.exe).
+        if not (path / "pyvenv.cfg").is_file() and not _has_python_exe(path):
             return
         seen.add(path)
         found.append((path, kind))
@@ -185,11 +204,22 @@ def discover_venvs(home: Path, root: Path, include_running: bool = True) -> list
             if child.is_dir():
                 add(child, "outtree")
 
-    if include_running and sys.prefix != sys.base_prefix:
+    # Standalone Python shipped under <home>/tools/ (e.g. python-3.14.x-win32-x64).
+    # This is where Hermes bundles its interpreter on Windows.
+    tools_dir = Path(home) / "tools"
+    if tools_dir.is_dir():
+        for child in sorted(tools_dir.iterdir()):
+            if child.is_dir() and _has_python_exe(child):
+                add(child, "standalone")
+
+    if include_running:
         prefix = Path(sys.prefix)
+        # Include the running interpreter's prefix if it looks Hermes-related
+        # OR is a venv (sys.prefix != sys.base_prefix).
         plausible = (
             "hermes" in str(prefix).lower()
             or str(prefix).startswith(str(Path(home)))
+            or sys.prefix != sys.base_prefix
         )
         if plausible:
             add(prefix, "running")
