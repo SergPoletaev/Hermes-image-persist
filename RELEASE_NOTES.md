@@ -1,43 +1,7 @@
-# Release notes — v1.0.1
-
-Text below is ready to copy into GitHub: the repository **About** description
-and the **Release** description for the `v1.0.1` tag (attach
-`hermes-image-persist-1.0.1.zip` to the release).
-
----
-
-## Repository description (Settings → General → About)
-
-**English (recommended):**
-
-> Cross-platform fix for hermes-agent #142500: pasted images no longer vanish from the Hermes Desktop chat history in Text/Auto modes — and the fix survives Hermes updates. Windows / Linux / macOS, pure stdlib, full rollback.
-
-Shorter variant:
-
-> Keeps pasted images in Hermes Desktop chat history (hermes-agent #142500). Update-proof, cross-platform, MIT.
-
-**Русский (если нужен):**
-
-> Кроссплатформенный фикc для hermes-agent #142500: вставленные картинки больше не пропадают из истории чата Hermes Desktop в режимах Text/Auto — и фикс переживает обновления Hermes. Windows / Linux / macOS, только stdlib, полный откат.
-
-Topics: `hermes` `hermes-agent` `bugfix` `patcher` `cross-platform` `windows` `linux` `macos`
-
----
-
-## Release title
-
-```
-v1.0.1 — delivery fixes (shim discovery, verification, live-install source patch)
-```
-
-Tag: `v1.0.1` (target: `main`)
-
----
-
 ## Release description
 
 ```markdown
-# Hermes Image Persist 1.0.1
+# Hermes Image Persist 1.0.3
 
 Field fix: 1.0.0 could install yet not act on 0.23.2. Fixes [NousResearch/hermes-agent#142500](https://github.com/NousResearch/hermes-agent/issues/142500)
 on Windows, Linux and macOS — and keeps fixing it after Hermes updates.
@@ -80,7 +44,7 @@ in the README.
 
 ## Files
 
-- `hermes-image-persist-1.0.1.zip` — the complete package
+- `hermes-image-persist-1.0.3.zip` — the complete package
 
 When upstream merges its own fix for #142500, simply uninstall this package
 (`python rollback.py`).
