@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  Hermes Image Persist 1.0.0 - Windows auto-installer
+REM  Hermes Image Persist 1.0.2 - Windows auto-installer
 REM  Double-click this file. No terminal, no commands to type.
 REM ============================================================
 chcp 65001 >nul 2>&1
@@ -11,7 +11,7 @@ title Hermes Image Persist - Installer
 
 echo.
 echo   ============================================================
-echo     Hermes Image Persist 1.0.0 - Windows Installer
+echo     Hermes Image Persist 1.0.2 - Windows Installer
 echo   ============================================================
 echo.
 

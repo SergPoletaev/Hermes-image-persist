@@ -1,8 +1,8 @@
-# Release notes — v1.0.0
+# Release notes — v1.0.1
 
 Text below is ready to copy into GitHub: the repository **About** description
-and the **Release** description for the `v1.0.0` tag (attach
-`hermes-image-persist-1.0.0.zip` to the release).
+and the **Release** description for the `v1.0.1` tag (attach
+`hermes-image-persist-1.0.1.zip` to the release).
 
 ---
 
@@ -27,19 +27,19 @@ Topics: `hermes` `hermes-agent` `bugfix` `patcher` `cross-platform` `windows` `l
 ## Release title
 
 ```
-v1.0.0 — first public release
+v1.0.1 — delivery fixes (shim discovery, verification, live-install source patch)
 ```
 
-Tag: `v1.0.0` (target: `main`)
+Tag: `v1.0.1` (target: `main`)
 
 ---
 
 ## Release description
 
 ```markdown
-# Hermes Image Persist 1.0.0
+# Hermes Image Persist 1.0.1
 
-First public release. Fixes [NousResearch/hermes-agent#142500](https://github.com/NousResearch/hermes-agent/issues/142500)
+Field fix: 1.0.0 could install yet not act on 0.23.2. Fixes [NousResearch/hermes-agent#142500](https://github.com/NousResearch/hermes-agent/issues/142500)
 on Windows, Linux and macOS — and keeps fixing it after Hermes updates.
 
 ## The bug
@@ -80,7 +80,7 @@ in the README.
 
 ## Files
 
-- `hermes-image-persist-1.0.0.zip` — the complete package
+- `hermes-image-persist-1.0.1.zip` — the complete package
 
 When upstream merges its own fix for #142500, simply uninstall this package
 (`python rollback.py`).

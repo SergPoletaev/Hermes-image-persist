@@ -22,8 +22,88 @@ Language / Язык / 语言 / भाषा: **[Русский](#русский)
 
 Проверен на **реальных исходниках** Hermes Agent **v0.23.1** (`a84025a`) и
 **v0.23.2** (`ae2a81c`) — оба файла включены в репозиторий как фикстуры, и
-патчер, и шим, и интеграционные проверки гоняются по ним (87 проверок,
+патчер, и шим, и интеграционные проверки гоняются по ним (122 проверки,
 `python selfcheck.py`).
+
+### Что нового в 1.0.3 (почему 1.0.2 «встал», но снова не сработал)
+
+Логи второго полевого отчёта показали ДВЕ вещи. Первая: **gateway-шлюз
+переживает и перезапуск окна, и выход через трей** — после всех действий
+ход в 01:43 обслуживало то же самое дерево процессов от 22:53 (нумерация
+потоков 41 -> 53 непрерывна, а llama-server, убитый вручную, был
+перезапущен в 01:43:05 самим старым шлюзом). Вторая: **мой флаг
+--restart-gateway из 1.0.2 не работал** — PowerShell-запрос «найди процессы
+с gateway.run/serve» находил сам себя (это видно прямо в вашей
+диагностике), установщик гонялся за собственными копиями и зависал на
+«Stopping...», не трогая настоящий шлюз.
+
+1. **Классификация по таблице процессов.** Один CIM-запрос получает все
+   процессы (pid/ppid/имя/cmdline/время старта), шлюз определяется в Python:
+   токены командной строки, дети Desktop/Chromium исключены, зонды
+   (powershell и т.п. с нашими же токенами) помечены pid=-1 и не могут
+   быть выбраны — самоопределение структурно невозможно.
+2. **Цепочка llama-server.** «Непрозрачный» шлюз определяется через его
+   дочерний llama-server — ровно та улика, что была в ваших логах.
+3. **Установщик теперь САМ останавливает живой шлюз** (по умолчанию;
+   отказаться — --no-restart-gateway). После установки просто запустите
+   Hermes — и фикс активен. Путь «установил → запустил → работает» стал
+   поведением по умолчанию.
+4. **Верификация standalone-питонов починена** (python.exe в корне
+   tools/python-*, а не Scripts/) — вечное «no python in this
+   environment / UNVERIFIED» исчезло.
+5. 122 офлайн-проверки (было 111) + живая полевая симуляция.
+
+### Что нового в 1.0.2 (найдена причина «всё стоит, но не работает»)
+
+Логи с реальной машины показали: фикс 1.0.1 встал идеально (патчи
+байт-в-байт, шим посажен и верифицирован), но **не сработал ни разу**.
+Причина — **gateway-шлюз живёт дольше окна Desktop**: он запускается как
+фоновый процесс `serve` и ПЕРЕЖИВАЕТ закрытие/открытие приложения. Gateway
+стартовал в 22:53, фикс поставлен в 00:58 — ход в 00:59 обслуживал всё тот
+же старый процесс со старым кодом в памяти. Python грузит код один раз при
+старте процесса: ни `.pth`-шим, ни патч исходников не достучатся до уже
+запущенного интерпретатора.
+
+1. **Аудит gateway-процесса.** Установщик, гвард и `diagnose.py` теперь
+   находят именно шлюз (`-m gateway.run` / `serve`), берут его время старта
+   и сравнивают с временем установки фикса. Шлюз «до фикса» даёт статус
+   `needs_gateway_restart` и громкое указание в диагностике.
+2. **`--restart-gateway`.** `python install.py --apply --yes
+   --restart-gateway` сам останавливает шлюз (мягко, с обработчиками
+   завершения; llama-server перезапустится сам по требованию) — следующий
+   старт Hermes уже будет с фиксом.
+3. Без флага установщик честно предупреждает: «шлюз работает со старым
+   кодом, фикс не подействует, пока он не перезапустится».
+
+**Главное для пользователя:** перезапуск ОКНА Hermes недостаточен. Нужно
+полностью выйти из Hermes (значок в трее → Exit) ИЛИ поставить с
+`--restart-gateway`, либо завершить фоновые процессы Hermes в диспетчере
+задач (НЕ трогая llama-server) и запустить Hermes снова.
+
+### Что нового в 1.0.1 (починен отказ 1.0.0 на 0.23.2)
+
+В 1.0.0 на некоторых установках 0.23.2 фикс ставился, но не действовал.
+Причины были не в логике (она верна и проверена по реальным исходникам), а в
+**доставке** — исправлены все три звена:
+
+1. **Поиск окружения gateway стал надёжным.** `facts.json` читается из ВСЕХ
+   `installs/*/` (PM мог сменить ключ состояния между версиями — тогда
+   «committed»-venv становился невидим и шим сажался не туда). Плюс скан
+   соседних `environments/` и, главное, — интерпретаторы **живых** процессов
+   Hermes (командные строки Win32_Process / ps / /proc) как самые
+   достоверные кандидаты.
+2. **Верификация шима.** После посадки шим доказуемо импортируется и ставит
+   свой хук из ПРИСВОЕННОГО окружения (`python -I`, как запускают шлюз).
+   «Файл лежит, но .pth не исполняется» теперь видно сразу в установщике,
+   гварде и `diagnose.py` (`VERIFIED` / `UNVERIFIED`).
+3. **Source-патч больше не ждёт остановки Hermes.** Раньше при живом
+   Desktop патч откладывался до бесконечности. Теперь ставится сразу:
+   запись атомарная и проверяется компиляцией; работающий процесс держит
+   старый модуль в памяти, новый старт подхватит патч. Требуется один
+   перезапуск Hermes после установки.
+4. Шим обёртывает и третий persist-шов (`run_turn`, queued follow-ups),
+   поддерживает `file://`-пути и голые имена файлов из заметки,
+   `diagnose.py` получил `--out <файл>` для полного отчёта одной командой.
 
 ### Как это работает — три независимых слоя
 
@@ -59,7 +139,7 @@ note-подобным и остальные слои ничего не дела�
 
 **Windows** — двойной клик по `install.bat`. Он сам найдёт Python (из
 Hermes или системы), покажет предпросмотр и спросит `Y/N` перед установкой.
-Также есть `diagnose.bat` (диагностика) и `selfcheck.bat` (87 проверок).
+Также есть `diagnose.bat` (диагностика) и `selfcheck.bat` (122 проверки).
 
 Если предпочитаете PowerShell:
 
@@ -120,7 +200,7 @@ python rollback.py        # восстанавливает бэкапы, сни�
 python selfcheck.py
 ```
 
-87 проверок: payload на реальных форматах заметок 0.23.1/0.23.2, патчер на
+122 проверки: payload на реальных форматах заметок 0.23.1/0.23.2, патчер на
 **реальных** исходниках апстрима (точный/пробельный/структурный якорь, CRLF,
 замена блоков от более ранних сборок, идемпотентность, отказы), шим в
 симулированном PM-окружении (`python -I` + `site.addsitedir` — ровно как в
@@ -137,7 +217,7 @@ guard.py                     один проход обслуживания (т�
 diagnose.py                  диагностика только для чтения
 diagnose.bat                 двойной клик: диагностика на Windows
 rollback.py                  полное удаление
-selfcheck.py                 офлайн-верификация (87 проверок)
+selfcheck.py                 офлайн-верификация (122 проверки)
 selfcheck.bat                двойной клик: самопроверка на Windows
 hermes_image_persist.py      runtime shim (подсаживается в site-packages)
 payload/local_image_persist.py   helper для gateway/
@@ -175,7 +255,7 @@ Cross-platform (Windows / Linux / macOS) fix for
 Tested against the **real upstream sources** of Hermes Agent **v0.23.1**
 (`a84025a`) and **v0.23.2** (`ae2a81c`) — both are shipped as test fixtures,
 and the patcher, the shim and the integration checks all run against them
-(87 checks, see `python selfcheck.py`).
+(122 checks, see `python selfcheck.py`).
 
 ### How it works — three independent layers
 
@@ -212,7 +292,7 @@ installs — everything is stdlib.
 
 **Windows** — double-click `install.bat`. It auto-finds Python (from Hermes
 or the system), shows a preview, and asks `Y/N` before applying. There are
-also `diagnose.bat` (diagnostics) and `selfcheck.bat` (87 checks).
+also `diagnose.bat` (diagnostics) and `selfcheck.bat` (122 checks).
 
 If you prefer PowerShell:
 
@@ -276,7 +356,7 @@ python rollback.py        # restores backups, removes shim + scheduler entry
 python selfcheck.py
 ```
 
-87 checks: payload against the real 0.23.1/0.23.2 enrichment-note formats,
+111 checks: payload against the real 0.23.1/0.23.2 enrichment-note formats,
 the patcher against the **real** upstream sources (exact/whitespace/structural
 anchors, CRLF, replacement of blocks from earlier builds, idempotency,
 refusals), the shim in a simulated PM environment (`python -I` +
@@ -294,7 +374,7 @@ guard.py                     one maintenance pass (scheduler entry point)
 diagnose.py                  read-only diagnostics
 diagnose.bat                 double-click diagnostics for Windows
 rollback.py                  full removal
-selfcheck.py                 offline verification suite (87 checks)
+selfcheck.py                 offline verification suite (122 checks)
 selfcheck.bat                double-click self-check for Windows
 hermes_image_persist.py      the runtime shim (planted into site-packages)
 payload/local_image_persist.py   helper planted into gateway/
@@ -331,7 +411,7 @@ tests/fixtures/              real upstream run_turn_prepare.py / run_turn.py (0.
 
 已在 Hermes Agent **v0.23.1**（`a84025a`）与 **v0.23.2**（`ae2a81c`）的
 **真实上游源码**上验证——两个版本的源码都作为测试固定件附带在仓库中，
-补丁器、运行时 shim 和集成检查全部基于它们运行（87 项检查，
+补丁器、运行时 shim 和集成检查全部基于它们运行（122 项检查，
 `python selfcheck.py`）。
 
 ### 工作原理——三个独立层
@@ -366,7 +446,7 @@ Python 3.9+（Hermes 自带的即可）。无需联网、无需 pip 安装——
 
 **Windows** — 双击 `install.bat`。它会自动查找 Python（从 Hermes 或系统中），
 显示预览，然后在应用前询问 `Y/N`。还提供 `diagnose.bat`（诊断）和
-`selfcheck.bat`（87 项检查）。
+`selfcheck.bat`（122 项检查）。
 
 如果偏好 PowerShell：
 
@@ -426,7 +506,7 @@ python rollback.py        # 恢复备份，移除 shim 与计划任务
 python selfcheck.py
 ```
 
-87 项检查：payload 针对真实的 0.23.1/0.23.2 增强文本格式；补丁器针对
+111 项检查：payload 针对真实的 0.23.1/0.23.2 增强文本格式；补丁器针对
 **真实**上游源码（精确/空白/结构化锚点、CRLF、早期构建遗留块的替换、
 幂等、拒绝）；在模拟 PM 环境（`python -I` + `site.addsitedir`，与
 `hermes_bootstrap` 一致）中的 shim；通过 shim 导入真实 0.23.2
@@ -441,7 +521,7 @@ guard.py                     一次维护扫描（计划任务入口）
 diagnose.py                  只读诊断
 diagnose.bat                 Windows 双击诊断
 rollback.py                  完整卸载
-selfcheck.py                 离线验证套件（87 项检查）
+selfcheck.py                 离线验证套件（122 项检查）
 selfcheck.bat                Windows 双击自检
 hermes_image_persist.py      运行时 shim（植入 site-packages）
 payload/local_image_persist.py   植入 gateway/ 的 helper
@@ -482,7 +562,7 @@ install.ps1 / install.sh     平台包装脚本
 Hermes Agent **v0.23.1** (`a84025a`) और **v0.23.2** (`ae2a81c`) के
 **वास्तविक अपस्ट्रीम सोर्स** के साथ सत्यापित — दोनों संस्करण रिपॉज़िटरी
 में टेस्ट फ़िक्स्चर के रूप में शामिल हैं, और पैचर, शिम तथा इंटीग्रेशन
-जाँचें उन्हीं पर चलती हैं (87 जाँचें, `python selfcheck.py`)।
+जाँचें उन्हीं पर चलती हैं (122 जाँचें, `python selfcheck.py`)।
 
 ### यह कैसे काम करता है — तीन स्वतंत्र परतें
 
@@ -521,7 +601,7 @@ Python 3.9+ (Hermes का अपना Python ठीक है)। नेटव
 
 **Windows** — `install.bat` पर डबल-क्लिक करें। यह Python (Hermes या सिस्टम से)
 स्वतः ढूँढता है, प्रीव्यू दिखाता है, और लागू करने से पहले `Y/N` पूछता है।
-`diagnose.bat` (डायग्नोस्टिक्स) और `selfcheck.bat` (87 जाँचें) भी उपलब्ध हैं।
+`diagnose.bat` (डायग्नोस्टिक्स) और `selfcheck.bat` (122 जाँचें) भी उपलब्ध हैं।
 
 यदि PowerShell पसंद हो:
 
@@ -583,7 +663,7 @@ python rollback.py        # बैकअप बहाल करता है, �
 python selfcheck.py
 ```
 
-87 जाँचें: वास्तविक 0.23.1/0.23.2 enrichment-note प्रारूपों पर payload;
+122 जाँचें: वास्तविक 0.23.1/0.23.2 enrichment-note प्रारूपों पर payload;
 **वास्तविक** अपस्ट्रीम सोर्स पर पैचर (सटीक/व्हाइटस्पेस/संरचनात्मक एंकर,
 CRLF, पुराने बिल्ड के ब्लॉक की बदली, idempotency, इनकार); simulated PM
 वातावरण (`python -I` + `site.addsitedir`, ठीक `hermes_bootstrap` जैसा) में
@@ -599,7 +679,7 @@ guard.py                     एक रखरखाव पास (शेड्�
 diagnose.py                  केवल-पठन डायग्नोस्टिक्स
 diagnose.bat                 Windows के लिए डबल-क्लिक डायग्नोस्टिक्स
 rollback.py                  पूर्ण हटाना
-selfcheck.py                 ऑफ़लाइन सत्यापन सूट (87 जाँचें)
+selfcheck.py                 ऑफ़लाइन सत्यापन सूट (122 जाँचें)
 selfcheck.bat                Windows के लिए डबल-क्लिक सेल्फ़-चेक
 hermes_image_persist.py      रनटाइम शिम (site-packages में रोपित)
 payload/local_image_persist.py   gateway/ में रोपित हेल्पर

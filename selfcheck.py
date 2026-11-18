@@ -217,6 +217,28 @@ def run_payload_tests(tmpdir: Path):
               builder(note_0232(str(img_a), "d", "cap"),
                       make_event("cap", [], internal=True)) is None)
 
+        # v1.0.1: file:// URL in the note is unwrapped to a real path
+        file_url_note = (
+            "[The user sent an image~ Here's what I can see:\nprose\n"
+            "image_url: file:///%s ~]\n\ncap" % str(img_a).replace("\\", "/")
+        )
+        result = builder(file_url_note, make_event("cap", []))
+        check("%s: file:// URL unwrapped to a path" % label,
+              result is not None and ("@image:%s" % img_a) in result, repr(result))
+
+        # v1.0.1: bare file name in the note resolves next to the event's path
+        sub = tmpdir / "cachedir"
+        sub.mkdir(exist_ok=True)
+        cached = sub / "upload.png"
+        cached.write_bytes(b"\x89PNG\r\n\x1a\n")
+        bare_note = (
+            "[The user sent an image~ Here's what I can see:\nprose\n"
+            "image_url: upload.png ~]\n\ncap"
+        )
+        result = builder(bare_note, make_event("cap", [str(cached)]))
+        check("%s: bare name in note resolves via event path" % label,
+              result is not None and ("@image:%s" % cached) in result, repr(result))
+
         # hostile event never raises
         class Boom:
             @property
@@ -376,6 +398,14 @@ def strip_discord_triggering_note(event, message_text):
     return message_text
 '''
 
+SYNTHETIC_RUN_TURN = '''
+"""Synthetic gateway.run_turn binding the strip seam at MODULE level."""
+
+from gateway.run_inbound import strip_discord_triggering_note  # noqa: F401
+
+STRIP_IN_RUN_TURN = strip_discord_triggering_note
+'''
+
 SYNTHETIC_SESSIONS = '''
 """Synthetic hermes_cli.web_routers.sessions with the real projection shape."""
 
@@ -398,6 +428,7 @@ site.addsitedir(sys.argv[2])
 
 import gateway.run_turn_prepare as prepare
 import gateway.run_inbound as inbound
+import gateway.run_turn as run_turn
 import hermes_cli.web_routers.sessions as sessions
 
 img = os.environ["HIP_TEST_IMAGE"]
@@ -420,6 +451,12 @@ strip = inbound.strip_discord_triggering_note
 results["strip_wrapped"] = getattr(strip, "_hip_patched", False)
 out = strip(E(), note)
 results["strip_durable"] = "@image:" in out and "Here" not in out
+
+# 2b) v1.0.1: the seam name hoisted into run_turn at import time is wrapped too
+hoisted = getattr(run_turn, "STRIP_IN_RUN_TURN", None)
+results["runturn_hoisted_wrapped"] = getattr(hoisted, "_hip_patched", False)
+results["runturn_module_wrapped"] = getattr(
+    getattr(run_turn, "strip_discord_triggering_note", None), "_hip_patched", False)
 
 # 3) read seam (REST projection)
 proj = sessions._project_for_display
@@ -450,6 +487,9 @@ def run_shim_tests(tmpdir: Path):
     (agent_root / "gateway" / "__init__.py").write_text("", encoding="utf-8")
     (agent_root / "gateway" / "run_turn_prepare.py").write_text(SYNTHETIC_PREPARE, encoding="utf-8")
     (agent_root / "gateway" / "run_inbound.py").write_text(SYNTHETIC_INBOUND, encoding="utf-8")
+    # v1.0.1: a run_turn module that from-imports the strip seam at MODULE level
+    # (a build where the hoisted import binds the name before either hook ran).
+    (agent_root / "gateway" / "run_turn.py").write_text(SYNTHETIC_RUN_TURN, encoding="utf-8")
     (agent_root / "hermes_cli").mkdir(parents=True)
     (agent_root / "hermes_cli" / "__init__.py").write_text("", encoding="utf-8")
     (agent_root / "hermes_cli" / "web_routers").mkdir()
@@ -498,9 +538,42 @@ def run_shim_tests(tmpdir: Path):
     check("shim: prepare seam returns durable text", results.get("prepare_durable") is True, results)
     check("shim: strip seam wrapped + durable", results.get("strip_wrapped") is True
           and results.get("strip_durable") is True, results)
+    check("shim: run_turn hoisted + module seams wrapped (v1.0.1)",
+          results.get("runturn_hoisted_wrapped") is True
+          and results.get("runturn_module_wrapped") is True, results)
     check("shim: REST projection wrapped + display_content set",
           results.get("project_wrapped") is True and results.get("project_display") is True, results)
     check("shim: double addsitedir stays single-wrapped", results.get("single_wrap") is True, results)
+
+    # v1.0.1: verify_shim() proves the .pth executes from the env's own python.
+    # The simulated venv has no real interpreter, so verification must report
+    # "no python" rather than claim success - the honest-negative path.
+    verified, vdetail = shim_install.verify_shim(venv)
+    check("shim: verify_shim honest when env has no python",
+          verified is False and "no python" in vdetail, (verified, vdetail))
+
+    # A REAL venv (this interpreter): plant, verify, remove.
+    real_venv = tmpdir / "real_env"
+    try:
+        import venv as _venv
+
+        _venv.create(str(real_venv), with_pip=False)
+    except Exception as exc:
+        check("shim: real-venv creation (skipped)", False, repr(exc))
+        real_venv = None
+    if real_venv is not None:
+        ok, detail = shim_install.install_shim(real_venv, verify=True)
+        check("shim: real venv planted", ok and "UNVERIFIED" not in detail, detail)
+        verified, vdetail = shim_install.verify_shim(real_venv)
+        check("shim: real venv verified via its own python -I", verified, vdetail)
+        # and the .pth line really executes in that env under -I
+        proc = subprocess.run(
+            [str(discovery.venv_python(real_venv)), "-I", "-c",
+             "import sys; print(getattr(sys, '_hermes_image_persist_installed', False))"],
+            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+        check("shim: .pth executes under -I in real venv",
+              proc.returncode == 0 and proc.stdout.strip() == "True", proc.stderr[-200:])
+        shim_install.remove_shim(real_venv)
 
     # disabled via env
     env_off = dict(env)
@@ -673,6 +746,26 @@ def run_guard_tests(tmpdir: Path):
     (venv / "pyvenv.cfg").write_text("home = /x\nversion = 3.12.0\n", encoding="utf-8")
     sp = discovery.site_packages(venv)
     sp.mkdir(parents=True)
+    # v1.0.1: give the simulated env a REAL interpreter so shim verification
+    # passes and a fully-clean pass stays a no-op (no UNVERIFIED notes).
+    try:
+        import venv as _venv
+
+        real_bin = venv / "Scripts" if os.name == "nt" else venv / "bin"
+        py_name = "python.exe" if os.name == "nt" else "python3"
+        if not (real_bin / py_name).is_file():
+            import shutil as _shutil
+
+            real_bin.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(sys.executable, real_bin / py_name)
+            # a copied interpreter needs its stdlib: point it at ours via a cfg
+            base = Path(sys.base_prefix if hasattr(sys, "base_prefix") else sys.prefix)
+            (venv / "pyvenv.cfg").write_text(
+                "home = %s\nversion = %d.%d.%d\ninclude-system-site-packages = true\n"
+                % (base, sys.version_info[0], sys.version_info[1], sys.version_info[2]),
+                encoding="utf-8")
+    except Exception:
+        pass
     facts_dir = home / "installs" / discovery.install_key(root)
     facts_dir.mkdir(parents=True, exist_ok=True)
     (facts_dir / "facts.json").write_text(
@@ -688,6 +781,40 @@ def run_guard_tests(tmpdir: Path):
           and patcher.plan_prepare((root / "gateway" / "run_turn_prepare.py").read_text(encoding="utf-8")).status == "already",
           report["source"])
 
+    # v1.0.1 regression guard: a LIVE Hermes process must NOT defer the source
+    # patch any more. 1.0.0 postponed it forever with an always-running
+    # Desktop; now the patch lands immediately (atomic, compile-checked) and
+    # only the running process keeps its in-memory modules until restart.
+    (root / "gateway" / "run_turn_prepare.py").write_text(
+        (FIXTURES / "run_turn_prepare_v0.23.2.py").read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "gateway" / "run_turn.py").write_text(
+        (FIXTURES / "run_turn_v0.23.2.py").read_text(encoding="utf-8"), encoding="utf-8")
+
+    live_marker = tmpdir / "live_hermes_marker"
+    live_marker.write_text("x", encoding="utf-8")
+
+    # Mock ONLY the two functions the guard consults; keep the rest of the real
+    # discovery module (version_string etc.) intact.
+    real_running = guard_core.discovery.hermes_process_running
+    real_discover = guard_core.discovery.discover_venvs
+    guard_core.discovery.hermes_process_running = staticmethod(
+        lambda root: (True, "fake live process"))
+    guard_core.discovery.discover_venvs = staticmethod(
+        lambda home, root, include_running=True: [])
+    try:
+        report_live = guard_core.guard_pass(home, state)
+    finally:
+        guard_core.discovery.hermes_process_running = real_running
+        guard_core.discovery.discover_venvs = real_discover
+    check("guard: source patch applied even with Hermes running",
+          patcher.plan_prepare((root / "gateway" / "run_turn_prepare.py").read_text(encoding="utf-8")).status == "already"
+          and report_live["status"] != "ok_no_source",
+          (report_live.get("status"), report_live.get("source")))
+    check("guard: no 'deferred' note when Hermes runs",
+          not any("deferred" in n for n in report_live.get("notes", [])),
+          report_live.get("notes"))
+
+    # restore patched state for the idempotency pass below
     state2 = state_mod.load_state(home)
     check("guard: state.json persisted", state2.get("last_status") == "ok")
 
@@ -695,6 +822,42 @@ def run_guard_tests(tmpdir: Path):
     report2 = guard_core.guard_pass(home, state2)
     check("guard: second pass is a no-op", report2["status"] == "ok"
           and not report2.get("notes"), report2.get("notes"))
+
+    # v1.0.2: a gateway process that started BEFORE the fix must flip the pass
+    # to needs_gateway_restart. v1.0.3 uses the process-dict API
+    # (live_gateway_processes), so monkeypatch THAT.
+    fake_gw = {"pid": 4242, "ppid": 100, "name": "python.exe",
+               "cmdline": r"C:\hermes\venv\Scripts\python.exe -m gateway.run serve",
+               "start_epoch": 1000000000}                  # started long ago
+    real_live_gw = guard_core.discovery.live_gateway_processes
+    try:
+        guard_core.discovery.live_gateway_processes = staticmethod(lambda: [dict(fake_gw)])
+        state2["first_installed_epoch"] = 2000000000       # fix installed later
+        report_stale = guard_core.guard_pass(home, state2)
+
+        # and a gateway started AFTER the fix must NOT trip it
+        state3b = state_mod.load_state(home)
+        fresh_gw = dict(fake_gw, start_epoch=2500000000)   # started after the fix
+        guard_core.discovery.live_gateway_processes = staticmethod(lambda: [fresh_gw])
+        report_fresh = guard_core.guard_pass(home, state3b)
+    finally:
+        guard_core.discovery.live_gateway_processes = real_live_gw
+    check("guard: pre-fix gateway -> needs_gateway_restart",
+          report_stale["status"] == "needs_gateway_restart"
+          and any("started BEFORE the fix" in n for n in report_stale.get("notes", [])),
+          (report_stale.get("status"), report_stale.get("notes")))
+    check("guard: gateway restart hint present in note",
+          any("restart" in n.lower() for n in report_stale.get("notes", [])),
+          report_stale.get("notes"))
+    check("guard: gateway pid listed in the note",
+          any("4242" in n for n in report_stale.get("notes", [])),
+          report_stale.get("notes"))
+    check("guard: post-fix gateway -> no restart demand",
+          report_fresh["status"] != "needs_gateway_restart",
+          (report_fresh.get("status"), report_fresh.get("notes")))
+
+    # restore clean state for the update-simulation below
+    state3 = state_mod.load_state(home)
 
     # simulate an update: tree replaced (fresh upstream file), new generation venv
     (root / "gateway" / "run_turn_prepare.py").write_text(
@@ -779,11 +942,129 @@ def run_discovery_tests(tmpdir: Path):
           committed is not None and Path(committed).resolve() == tools_py.resolve(),
           committed)
 
+    # v1.0.1: facts.json under a SIBLING installs/* dir (PM re-keyed its state
+    # dir between versions) is still found as the committed environment.
+    sibling_dir = home / "installs" / "zz-otherkey"
+    sibling_dir.mkdir(parents=True, exist_ok=True)
+    other_venv = home / "installs" / "zz-otherkey" / "environments" / "gen-9"
+    other_venv.mkdir(parents=True, exist_ok=True)
+    (other_venv / "pyvenv.cfg").write_text("home = /x\nversion = 3.12.0\n", encoding="utf-8")
+    (sibling_dir / "facts.json").write_text(
+        json_dumps({"packages": {"venv": {"environment": str(other_venv)}}}), encoding="utf-8")
+    # remove the primary facts.json so ONLY the sibling can satisfy the lookup
+    (facts_dir / "facts.json").unlink()
+    committed_sibling = discovery.committed_environment(home, root)
+    check("discovery: sibling installs/*/facts.json found (PM re-key)",
+          committed_sibling is not None and Path(committed_sibling).resolve() == other_venv.resolve(),
+          committed_sibling)
+    venvs_after = discovery.discover_venvs(home, root)
+    check("discovery: sibling generation venvs discovered",
+          any(Path(v).resolve() == other_venv.resolve() for v, _ in venvs_after), venvs_after)
+
+    # v1.0.1: interpreter_env_from_command maps a live process command line
+    # to its environment root.
+    cmd_win = r"C:\Users\u\AppData\Local\hermes\installs\k1\environments\gen-2\Scripts\python.exe -I -m gateway.run"
+    mapped = discovery.interpreter_env_from_command(cmd_win)
+    check("discovery: live command line -> env root (Windows shape)",
+          mapped is not None and mapped.as_posix().endswith("gen-2"), mapped)
+    cmd_nix = "/home/u/.hermes/installs/k1/environments/gen-2/bin/python3 -m gateway.run"
+    mapped2 = discovery.interpreter_env_from_command(cmd_nix)
+    check("discovery: live command line -> env root (POSIX shape)",
+          mapped2 is not None and mapped2.as_posix().endswith("gen-2"), mapped2)
+    check("discovery: non-python command line -> None",
+          discovery.interpreter_env_from_command("C:\\Windows\\notepad.exe file.txt") is None)
+
+    # v1.0.3: gateway classification from a PROCESS TABLE. This is the exact
+    # field failure of v1.0.2: the PowerShell probe matched ITSELF ('serve'/
+    # 'gateway.run' inside the query string), so installers saw powershell.exe
+    # as "gateways" and never touched the real one. Now classification runs in
+    # Python over one snapshot; probe shells carry pid=-1 and are excluded.
+    real_snapshot = discovery._snapshot_processes
+    fake_table = [
+        # pid,   ppid,  cmdline,                                                     name,           start
+        (-1,     111,   "powershell.exe ... Get-CimInstance ... gateway.run ...",    "powershell.exe", None),  # v1.0.2 self-match!
+        (101,    100,   r"C:\hermes\apps\desktop\win-unpacked\Hermes.exe",           "Hermes.exe",    3000000000),  # Desktop shell
+        (102,    101,   r"C:\hermes\Hermes.exe --type=renderer --user-data-dir=...", "Hermes.exe",    3000000001),  # Chromium child
+        (200,    100,   r"C:\venv\Scripts\python.exe -I -m gateway.run",             "python.exe",    3000000002),  # REAL gateway
+        (201,    200,   r"C:\hermes\llama-server.exe --model g",                     "llama-server.exe", 3000000003),  # its child
+        (300,    299,   r"C:\Windows\System32\someapp.exe",                          "someapp.exe",   None),         # noise
+    ]
+    try:
+        discovery._snapshot_processes = lambda: [list(r) for r in fake_table]
+        procs = discovery.live_gateway_processes()
+        cmds = discovery.live_gateway_commands()
+    finally:
+        discovery._snapshot_processes = real_snapshot
+    gw_pids = [g["pid"] for g in procs]
+    check("discovery: probe shell (v1.0.2 self-match) never classified as gateway",
+          all(p not in gw_pids for p in (-1,)), gw_pids)
+    check("discovery: Desktop shell + Chromium children excluded",
+          101 not in gw_pids and 102 not in gw_pids, gw_pids)
+    check("discovery: real gateway (python -m gateway.run) detected",
+          200 in gw_pids, gw_pids)
+    check("discovery: llama-server itself NOT a target (its parent is)",
+          201 not in gw_pids, gw_pids)
+    check("discovery: gateway carry start_epoch from the table",
+          all(g.get("start_epoch") for g in procs if g["pid"] == 200), procs)
+
+    # llama-server parent chain: opaque-parent gateway (hermes.exe with no
+    # readable args) is still found THROUGH its supervised llama-server child.
+    fake_table2 = [
+        (101,    100,   r"C:\hermes\apps\desktop\win-unpacked\Hermes.exe",  "Hermes.exe",        3000000000),
+        (900,    899,   r"C:\hermes\hermes.exe",                           "hermes.exe",        3000000004),  # opaque
+        (901,    900,   r"C:\hermes\llama-server.exe --port 18434",        "llama-server.exe",  3000000005),
+    ]
+    try:
+        discovery._snapshot_processes = lambda: [list(r) for r in fake_table2]
+        procs2 = discovery.live_gateway_processes()
+    finally:
+        discovery._snapshot_processes = real_snapshot
+    check("discovery: opaque gateway found via llama-server parent chain",
+          any(g["pid"] == 900 and g.get("via") for g in procs2), procs2)
+    check("discovery: Desktop-only Hermes.exe still not flagged (no llama child)",
+          all(g["pid"] != 101 for g in procs2), procs2)
+
+    # v1.0.3: _parse_cim_date handles both WMI spellings
+    check("discovery: _parse_cim_date CIM DateTime",
+          discovery._parse_cim_date("20261118005843.500000+180") == 1794963523,
+          discovery._parse_cim_date("20261118005843.500000+180"))
+    check("discovery: _parse_cim_date /Date()/",
+          discovery._parse_cim_date("/Date(1794963523000)/") == 1794963523,
+          discovery._parse_cim_date("/Date(1794956323000)/"))
+    check("discovery: _parse_cim_date garbage -> None",
+          discovery._parse_cim_date("") is None
+          and discovery._parse_cim_date("not a date") is None)
+
+    # v1.0.3: venv_python finds standalone-layout Pythons (python.exe in the
+    # ROOT) - the cause of the permanent "no python in this environment"
+    # UNVERIFIED noise for tools/python-* environments in v1.0.2.
+    standalone_root = tmpdir / "python-3.14.7-x64"
+    standalone_root.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        py = standalone_root / "python.exe"
+    else:
+        (standalone_root / "bin").mkdir(exist_ok=True)
+        py = standalone_root / "bin" / "python3"
+    py.write_text("#!stub\n", encoding="utf-8")
+    check("discovery: venv_python resolves standalone-layout python",
+          discovery.venv_python(standalone_root).is_file()
+          and discovery.venv_python(standalone_root) == py,
+          discovery.venv_python(standalone_root))
+
+    # v1.0.3: process_start_epochs reads from the TABLE now: every entry has a
+    # resolved start epoch for processes that expose a cmdline on POSIX.
+    if os.path.exists("/proc/self/stat"):
+        epochs = discovery.process_start_epochs([])
+        check("discovery: process_start_epochs returns a populated table",
+              bool(epochs) and all(v > 0 for v in epochs.values()), len(epochs))
+    else:
+        check("discovery: process_start_epochs (POSIX only, skipped here)", True)
+
 
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    print("Hermes Image Persist 1.0.0 selfcheck")
+    print("Hermes Image Persist 1.0.3 selfcheck")
     print("python : %s (%s)" % (sys.version.split()[0], sys.executable))
     with tempfile.TemporaryDirectory(prefix="hip_check_") as raw:
         tmpdir = Path(raw)

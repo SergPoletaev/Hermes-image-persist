@@ -26,6 +26,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -64,13 +65,48 @@ def section_layers(home: Path, root: Path) -> None:
     committed = discovery.committed_environment(home, root)
     if committed is not None:
         print("  committed environment: %s" % committed)
+    live_cmds = discovery.live_hermes_commands()
+    if live_cmds:
+        print("  LIVE hermes processes: %d" % len(live_cmds))
+        for cmdline in live_cmds[:4]:
+            print("    %s" % cmdline[:150])
+    else:
+        print("  live hermes processes : none detected")
     if not venvs:
         print("  no Python environments discovered")
     for venv, kind in venvs:
         module, pth = shim_install.shim_paths_for_venv(venv)
-        print("  [%s] %-9s module=%s pth=%s" % (
-            "OK " if shim_install.shim_installed(venv) else "off",
-            kind, "yes" if module.is_file() else "no ", "yes" if pth.is_file() else "no "))
+        planted = shim_install.shim_installed(venv)
+        verified, vdetail = shim_install.verify_shim(venv) if planted else (False, "not planted")
+        flag = "VERIFIED" if verified else ("PLANTED " if planted else "off      ")
+        print("  [%s] %-11s module=%s pth=%s" % (
+            flag, kind, "yes" if module.is_file() else "no ", "yes" if pth.is_file() else "no "))
+        if planted and not verified:
+            print("      !! %s" % vdetail)
+
+    print()
+    print("-- GATEWAY PROCESS (v1.0.3: it outlives Desktop restarts AND tray exits!) --")
+    gateway_procs = discovery.live_gateway_processes()
+    state_for_epochs = state_mod.load_state(home)
+    fix_epoch = state_for_epochs.get("first_installed_epoch")
+    if gateway_procs:
+        any_stale = False
+        for proc in gateway_procs[:5]:
+            started = proc.get("start_epoch")
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)) if started else "?"
+            stale = bool(started and fix_epoch and started < fix_epoch)
+            any_stale = any_stale or stale
+            via = "  [detected via llama-server parent chain]" if proc.get("via") else ""
+            print("  gateway: %s  (pid %d)%s" % (
+                (proc.get("cmdline") or proc.get("name") or "?")[:120], proc.get("pid", 0), via))
+            print("          started: %s%s" % (
+                when, "  <-- STARTED BEFORE THE FIX: runs OLD code in memory!" if stale else ""))
+        if any_stale:
+            print("  !! THE FIX CANNOT ACT until this gateway restarts.")
+            print("  !! Either run:  python install.py --apply --yes   (it stops the gateway")
+            print("  !! automatically), or end these pids in Task Manager and start Hermes again.")
+    else:
+        print("  no live gateway processes detected right now")
 
     print()
     print("-- guard (layer 3) --")
@@ -259,13 +295,37 @@ def main() -> int:
     parser.add_argument("--home", default="")
     parser.add_argument("--session", default="")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--out", default="",
+                        help="also write the full report to this file (UTF-8)")
     args = parser.parse_args()
 
     state = state_mod.load_state(discovery.hermes_home(args.home))
     home = discovery.hermes_home(args.home or state.get("home", ""))
     root = discovery.agent_root(home, args.root or state.get("root", ""))
 
-    print("=== Hermes Image Persist 1.0.0 diagnostics (read-only) ===")
+    if args.out:
+        import io
+
+        class _Tee:
+            def __init__(self, *streams):
+                self._streams = streams
+
+            def write(self, data):
+                for stream in self._streams:
+                    stream.write(data)
+
+            def flush(self):
+                for stream in self._streams:
+                    try:
+                        stream.flush()
+                    except Exception:
+                        pass
+
+        out_path = Path(args.out).expanduser()
+        out_handle = open(out_path, "w", encoding="utf-8", errors="replace")
+        sys.stdout = _Tee(sys.__stdout__, out_handle)
+
+    print("=== Hermes Image Persist 1.0.3 diagnostics (read-only) ===")
     if not root.is_dir():
         print("agent root not found: %s (pass --root)" % root)
         return 2
@@ -283,6 +343,21 @@ def main() -> int:
     print("  A/B missing but D ok      -> write path idle; check shim planting + guard status.")
     print("  A/B ok but D fails        -> projection layer; send diagnose output + desktop.log.")
     print("  status=needs_adaptation   -> source anchors changed; shim still covers new turns.")
+    print("  status=needs_gateway_restart / 'STARTED BEFORE THE FIX' above -> the gateway is an")
+    print("      OLD process still running pre-fix code: fully exit Hermes (tray) or run")
+    print("      install.py --apply --yes --restart-gateway, then start Hermes again.")
+    print("  any environment PLANTED but not VERIFIED -> the .pth never runs there;")
+    print("      send this whole output (use --out <file>) for adaptation.")
+
+    if args.out:
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        out_handle.close()
+        sys.stdout = sys.__stdout__
+        print()
+        print("Report also written to: %s" % out_path)
     return 0
 
 

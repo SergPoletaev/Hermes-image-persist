@@ -50,7 +50,7 @@ import os
 import re
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.0.3"
 
 _MARKER = "Image persistence"
 _READ_MARKER = "Image display"
@@ -169,7 +169,51 @@ def _clean_path(raw: str) -> str:
     for wrapper in ("<", ">", '"', "'", "`"):
         if len(p) >= 2 and p.startswith(wrapper) and p.endswith(wrapper):
             p = p[1:-1].strip()
+    if p[:7].lower() == "file://":
+        p = p[7:]
+        # file:///C:/... -> C:/...; file:////tmp/x or file://tmp/x -> /tmp/x
+        # (empty host, path form); never leave a "//"-prefixed POSIX path in
+        # the durable ref - os.path.isfile() tolerates it, the Desktop won't.
+        if os.name != "nt":
+            while p.startswith("//"):
+                p = p[1:]
+        elif len(p) >= 3 and p[0] == "/" and p[2] == ":":
+            p = p[1:]
+        elif p.startswith("/"):
+            p = p[1:]  # file://host/share -> host/share is out of scope; best effort
     return p
+
+
+def _expand_note_paths(candidates, note_text) -> list:
+    """v1.0.1: resolve bare file names inside the note against event paths.
+
+    Inbound pre-analysis may rewrite attachment paths into cached copies under
+    a per-session cache dir while the note keeps the ORIGINAL bare file name
+    (or the note carries the bare name while the event holds the absolute
+    path). A bare name that exists next to an absolute candidate is accepted
+    as that file; a bare name alone is still tried from the process CWD.
+    """
+    paths = list(candidates or ())
+    try:
+        note_text = note_text if isinstance(note_text, str) else ""
+        if not note_text:
+            return paths
+        for match in IMAGE_URL_LINE_RE.finditer(note_text):
+            p = _clean_path(match.group(1))
+            if not p or os.path.isabs(p):
+                continue
+            for anchor in candidates or ():
+                if not isinstance(anchor, str) or not os.path.isabs(anchor):
+                    continue
+                sibling = os.path.join(os.path.dirname(anchor), p)
+                if os.path.isfile(sibling):
+                    paths.append(sibling)
+                    break
+            else:
+                paths.append(p)
+    except Exception:
+        pass
+    return paths
 
 
 def _existing_image_paths(candidates) -> list:
@@ -288,6 +332,8 @@ def durable_text_image_message(model_message, event):
         for p in note_paths:
             if p not in merged:
                 merged.append(p)
+        # v1.0.1: bare file names in the note resolve against event paths / CWD.
+        merged = _expand_note_paths(merged, model_message)
         durable = _existing_image_paths(merged)
         if not durable:
             _log("text-image turn recognized but no durable image file found "
@@ -386,6 +432,38 @@ def _wrap_strip_discord_note(module) -> None:
     _log("write seam active: gateway.run_inbound.strip_discord_triggering_note wrapped")
 
 
+def _wrap_strip_discord_note_in_module(module) -> None:
+    """v1.0.1: the SAME seam, imported into ``gateway.run_turn`` (queued follow-ups).
+
+    ``run_turn.py`` does ``from gateway.run_inbound import strip_discord_triggering_note``
+    at call time (inside the follow-up branch), so rebinding the function on the
+    run_inbound module already covers it. This wrapper exists for builds where
+    the import was hoisted to module level (a from-import binds the name in
+    run_turn's namespace at import time, before either shim hook ran). If the
+    name is absent - nothing to do.
+    """
+    original = getattr(module, "strip_discord_triggering_note", None)
+    if original is None or getattr(original, "_hip_patched", False):
+        return
+
+    def wrapper(event, message_text, _original=original):
+        out = _original(event, message_text)
+        try:
+            if not getattr(event, "internal", False):
+                durable = durable_text_image_message(
+                    out if isinstance(out, str) else message_text, event)
+                if durable is not None:
+                    out = durable
+        except Exception as exc:
+            _log("run_turn seam failed (%r); keeping default persistence" % (exc,))
+        return out
+
+    wrapper._hip_patched = True
+    wrapper.__wrapped__ = original
+    module.strip_discord_triggering_note = wrapper
+    _log("write seam active: gateway.run_turn.strip_discord_triggering_note wrapped")
+
+
 def _wrap_project_for_display(module) -> None:
     original = getattr(module, "_project_for_display", None)
     if original is None or getattr(original, "_hip_patched", False):
@@ -419,6 +497,7 @@ def _wrap_project_for_display(module) -> None:
 _TARGETS = {
     "gateway.run_turn_prepare": _wrap_timestamp_method,
     "gateway.run_inbound": _wrap_strip_discord_note,
+    "gateway.run_turn": _wrap_strip_discord_note_in_module,
     "hermes_cli.web_routers.sessions": _wrap_project_for_display,
 }
 

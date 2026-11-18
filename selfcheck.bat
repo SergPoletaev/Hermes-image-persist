@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM  Hermes Image Persist - self-check shortcut
-REM  Double-click to run 87 offline verification checks.
+REM  Double-click to run 122 offline verification checks.
 REM ============================================================
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
@@ -11,7 +11,7 @@ title Hermes Image Persist - Self-check
 
 echo.
 echo   ============================================================
-echo     Hermes Image Persist - Offline Verification (87 checks)
+echo     Hermes Image Persist - Offline Verification (122 checks)
 echo   ============================================================
 echo.
 
